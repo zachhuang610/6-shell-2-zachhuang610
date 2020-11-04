@@ -8,7 +8,7 @@
 #include <unistd.h>
 #include "jobs.h"
 
-int jobn = 0;
+int jobn = 1;
 
 /*
 parse - a function for parsing user input with redirection feature handling
@@ -201,26 +201,79 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
     }
 
     if (background == 0) {
-        waitpid(pid, &wstatus, WUNTRACED);
+        waitpid(-pid, &wstatus, WUNTRACED);
         if (WIFSIGNALED(wstatus)) {
             // terminated by signal
             fprintf(stdout, "[%i] (%i) terminated by signal %i \n", jobn, pid,
                     WTERMSIG(wstatus));
         } else if (WIFSTOPPED(wstatus)) {
             // stopped, adds to job list
-            jobn++;
+            
             add_job(jlist, jobn, pid, STOPPED, filename);
             fprintf(stdout, "[%i] (%i) suspended by signal %i \n", jobn, pid,
                     WSTOPSIG(wstatus));
+            jobn++;
         }
     } else {
-        jobn++;
+        
         add_job(jlist, jobn, pid, RUNNING, filename);
         fprintf(stdout, "[%i] (%i) \n", jobn, pid);
         fflush(stdout);
+        jobn++;
     }
     tcsetpgrp(0, getpgrp());
 }
+
+void fg(job_list_t * jlist, int jid) {
+    int j;
+    int pid = get_job_pid(jlist, jid);
+    
+    if (pid == -1) {
+        fprintf(stderr, "error: jid does not exist\n");
+    }
+    pid_t pgid = getpgid(pid);
+    if (pgid < 0) {
+        perror("getpgid");
+    }
+    j = tcsetpgrp(0, pgid);
+    if (j < 0) {
+        perror("tcsetpgrp");
+    }
+    j = kill(-pid, SIGCONT);
+    if (j < 0) {
+        perror("kill");
+    }
+    fprintf(stdout, "fg pid : %i\n", pid);
+    fprintf(stdout, "fg pgid: %i\n", pgid);
+    fflush(stdout);
+    signal(SIGINT, SIG_DFL);
+    signal(SIGTSTP, SIG_DFL);   
+    signal(SIGQUIT, SIG_DFL);
+    signal(SIGTTOU, SIG_DFL);
+
+    int wstatus;
+    waitpid(pid, &wstatus, WUNTRACED);
+    if (WIFSIGNALED(wstatus)) {
+        // terminated by signal
+        fprintf(stdout,
+                "[%i] (%i) terminated by signal %i \n",
+                jid, pid, WTERMSIG(wstatus));
+        remove_job_jid(jlist, jid);
+    } else if (WIFSTOPPED(wstatus)) {
+        // stopped, adds to job list
+        update_job_jid(jlist, jid, STOPPED);
+        fprintf(stdout,
+                "[%i] (%i) suspended by signal %i \n",
+                jid, pid, WSTOPSIG(wstatus));
+    } else {
+        fprintf(stdout, "terminated");
+        fflush(stdout);
+        remove_job_jid(jlist, jid);
+    }
+}
+
+
+
 
 /*
 main: the main shell, which waits for user input, parses and execute user
@@ -336,35 +389,10 @@ int main() {
                         } else {
                             fg_arg++;
                             int jid = atoi(fg_arg);
-                            int pid = get_job_pid(jlist, jid);
-                            kill(-pid, SIGCONT);
-                            pid_t pgid = getpgid(pid);
-                            tcsetpgrp(0, pgid);
-                            printf("jid: %i\n background to foreground pid: %i\n pgid: %i\n", jid, pid, pgid);
-                            fflush(stdout);
-                            signal(SIGINT, SIG_DFL);
-                            signal(SIGTSTP, SIG_DFL);   
-                            signal(SIGQUIT, SIG_DFL);
-                            signal(SIGTTOU, SIG_DFL);
-                            int wstatus;
-                            waitpid(pid, &wstatus, WUNTRACED);
-                            if (WIFSIGNALED(wstatus)) {
-                                // terminated by signal
-                                fprintf(stdout,
-                                        "[%i] (%i) terminated by signal %i \n",
-                                        jobn, pid, WTERMSIG(wstatus));
-                            } else if (WIFSTOPPED(status)) {
-                                // stopped, adds to job list
-                                jobn++;
-                                update_job_jid(jlist, jid, STOPPED);
-                                fprintf(stdout,
-                                        "[%i] (%i) suspended by signal %i \n",
-                                        jobn, pid, WSTOPSIG(wstatus));
-                            }
-                            remove_job_pid(jlist, pid);
-                            tcsetpgrp(0, getpgrp());
+                            fg(jlist, jid);
                         }
                     } else if (strcmp(cmd, "bg") == 0) {
+
                     } else {
                         // command is not a built-in, call exec_program
                         exec_program(tokens[0], argv, io, background, jlist);
