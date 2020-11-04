@@ -270,6 +270,8 @@ void fg(job_list_t * jlist, int jid) {
         fflush(stdout);
         remove_job_jid(jlist, jid);
     }
+
+    tcsetpgrp(0, getpgrp());
 }
 
 
