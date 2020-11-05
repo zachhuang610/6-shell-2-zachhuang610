@@ -118,7 +118,6 @@ int parse(char buffer[1024], char *tokens[512], char *argv[512], char *io[3],
         }
     }
 
-
     for (int j = 0; j < i; j++) {
         char *arg;
         arg = strrchr(tokens[j], '/');
@@ -150,7 +149,6 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
 
         if (background == 0) {
             tcsetpgrp(0, getpgrp());
-            
         }
         signal(SIGINT, SIG_DFL);
         signal(SIGTSTP, SIG_DFL);
@@ -204,7 +202,7 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
     }
 
     if (background == 0) {
-        waitpid(-1, &wstatus, WUNTRACED);
+        waitpid(pid, &wstatus, WUNTRACED);
         if (WIFSIGNALED(wstatus)) {
             // terminated by signal
             fprintf(stdout, "[%i] (%i) terminated by signal %i\n", jobn, pid,
@@ -217,7 +215,7 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
             jobn++;
         }
     } else {
-        //background task, add to job list and print running
+        // background task, add to job list and print running
         add_job(jlist, jobn, pid, RUNNING, filename);
         fprintf(stdout, "[%i] (%i)\n", jobn, pid);
         fflush(stdout);
@@ -226,11 +224,17 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
     tcsetpgrp(0, getpgrp());
 }
 
-void fg(job_list_t * jlist, int jid) {
+/*
+fg: a function for running processes in the fg
+params:
+ - jlist: job list
+ - jid: job id to be foregrounded
+*/
+void fg(job_list_t *jlist, int jid) {
     int j;
     int pid = get_job_pid(jlist, jid);
     int canary = 0;
-    
+
     if (pid == -1) {
         fprintf(stderr, "error: job not found\n");
         canary = 1;
@@ -260,28 +264,39 @@ void fg(job_list_t * jlist, int jid) {
         waitpid(-1, &wstatus, WUNTRACED);
         if (WIFSIGNALED(wstatus)) {
             // terminated by signal
-            fprintf(stdout,
-                    "[%i] (%i) terminated by signal %i\n",
-                    jid, pid, WTERMSIG(wstatus));
-            remove_job_jid(jlist, jid);
+            fprintf(stdout, "[%i] (%i) terminated by signal %i\n", jid, pid,
+                    WTERMSIG(wstatus));
+            int j = remove_job_jid(jlist, jid);
+            if (j == -1) {
+                fprintf(stderr, "fg remove job error\n");
+            }
         } else if (WIFSTOPPED(wstatus)) {
             // stopped, adds to job list
-            update_job_jid(jlist, jid, STOPPED);
-            fprintf(stdout,
-                    "[%i] (%i) suspended by signal %i\n",
-                    jid, pid, WSTOPSIG(wstatus));
+            int j = update_job_jid(jlist, jid, STOPPED);
+            if (j == -1) {
+                fprintf(stderr, "fg update job error\n");
+            } else {
+                fprintf(stdout, "[%i] (%i) suspended by signal %i\n", jid, pid,
+                        WSTOPSIG(wstatus));
+            }
+
         } else {
             remove_job_jid(jlist, jid);
         }
     }
-    
 }
 
-void bg(job_list_t * jlist, int jid) {
+/*
+bg: function for backgrounding a process
+params:
+ - jlist: job list
+ - jid: job id to be foregrounded
+*/
+void bg(job_list_t *jlist, int jid) {
     int j;
     int pid = get_job_pid(jlist, jid);
     int canary = 0;
-    
+
     if (pid == -1) {
         fprintf(stderr, "job not found\n");
         canary = 1;
@@ -306,11 +321,12 @@ void bg(job_list_t * jlist, int jid) {
         }
     }
     if (!canary) {
-        update_job_pid(jlist, pid, RUNNING);
+        int j = update_job_pid(jlist, pid, RUNNING);
+        if (j == -1) {
+            fprintf(stderr, "bg update job error\n");
+        }
     }
-    
 }
-
 
 /*
 main: the main shell, which waits for user input, parses and execute user
@@ -328,41 +344,66 @@ int main() {
     int ret, status;
 
     while (1) {
+        // masks signals
         signal(SIGINT, SIG_IGN);
         signal(SIGTSTP, SIG_IGN);
         signal(SIGQUIT, SIG_IGN);
         signal(SIGTTOU, SIG_IGN);
 
-
         int jid;
         int pid;
-
-        while((pid = get_next_pid(jlist)) > 0) {
+        // iterates through processes, checks if any have changed status
+        while ((pid = get_next_pid(jlist)) > 0) {
             jid = get_job_jid(jlist, pid);
-            ret = waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
-            if (ret > 0) {
-                if (WIFEXITED(status)) {
-                    update_job_jid(jlist, jid, STOPPED);
-                    printf("[%i] (%i) terminated with exit status %i\n", jid, pid,
-                        WEXITSTATUS(status));
-                    remove_job_jid(jlist, jid);
-                } else if (WIFSIGNALED(status)) {
-                    printf("[%i] (%i) terminated by signal %i\n", jid, pid,
-                        WTERMSIG(status));
-                    remove_job_jid(jlist, jid);
-                } else if (WIFSTOPPED(status)) {
-                    update_job_jid(jlist, jid, STOPPED);
-                    printf("[%i] (%i) suspended by signal %i\n", jid, pid,
-                        WSTOPSIG(status));
-                } else if (WIFCONTINUED(status)) {
-                    update_job_jid(jlist, jid, RUNNING);
-                    printf("[%i] (%i) resumed\n", jid, pid);
+            if (jid == -1) {
+                fprintf(stderr, "get_job_id error\n");
+            } else {
+                ret = waitpid(-pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
+                if (ret > 0) {
+                    if (WIFEXITED(status)) {
+                        int j = update_job_jid(jlist, jid, STOPPED);
+                        if (j == -1) {
+                            fprintf(stderr, "update job error\n");
+                        } else {
+                            printf("[%i] (%i) terminated with exit status %i\n",
+                                   jid, pid, WEXITSTATUS(status));
+                            int j = remove_job_jid(jlist, jid);
+                            if (j == -1) {
+                                fprintf(stderr, "remove job error\n");
+                            }
+                        }
+                    } else if (WIFSIGNALED(status)) {
+                        printf("[%i] (%i) terminated by signal %i\n", jid, pid,
+                               WTERMSIG(status));
+                        int j = remove_job_jid(jlist, jid);
+                        if (j == -1) {
+                            fprintf(stderr, "remove job error\n");
+                        }
+                    } else if (WIFSTOPPED(status)) {
+                        int j = update_job_jid(jlist, jid, STOPPED);
+                        if (j == -1) {
+                            fprintf(stderr, "update job error\n");
+                        } else {
+                            printf("[%i] (%i) suspended by signal %i\n", jid,
+                                   pid, WSTOPSIG(status));
+                        }
+                    } else if (WIFCONTINUED(status)) {
+                        int j = update_job_jid(jlist, jid, RUNNING);
+                        if (j == -1) {
+                            fprintf(stderr, "update job error\n");
+                        } else {
+                            printf("[%i] (%i) resumed\n", jid, pid);
+                        }
+                    }
                 }
             }
         }
 
-
-        tcsetpgrp(0, getpgrp());
+        int j = tcsetpgrp(0, getpgrp());
+        if (j < 0) {
+            perror("tcsetpgrp");
+            fflush(stderr);
+        }
 
 #ifdef PROMPT
         if (printf("33sh> ") < 0) {
@@ -380,7 +421,12 @@ int main() {
         memset(io, 0, 3 * (sizeof(char *)));
         int background = 0;
 
-        tcsetpgrp(0, getpgrp());
+        j = tcsetpgrp(0, getpgrp());
+        if (j < 0) {
+            perror("tcsetpgrp");
+            fflush(stderr);
+        }
+
         // reads in input
         n = read(0, buf, sizeof(buf));
 
@@ -439,8 +485,7 @@ int main() {
                             int jid = atoi(bg_arg);
                             bg(jlist, jid);
                         }
-                    } else if (strcmp(cmd, "jobs") == 0)
-                    {
+                    } else if (strcmp(cmd, "jobs") == 0) {
                         jobs(jlist);
                     } else {
                         // command is not a built-in, call exec_program
