@@ -211,13 +211,13 @@ void exec_program(char *filename, char *argv[512], char *io[3], int background,
                     WTERMSIG(wstatus));
         } else if (WIFSTOPPED(wstatus)) {
             // stopped, adds to job list
-            
             add_job(jlist, jobn, pid, STOPPED, filename);
             fprintf(stdout, "[%i] (%i) suspended by signal %i\n", jobn, pid,
                     WSTOPSIG(wstatus));
             jobn++;
         }
     } else {
+        //background task, add to job list and print running
         add_job(jlist, jobn, pid, RUNNING, filename);
         fprintf(stdout, "[%i] (%i)\n", jobn, pid);
         fflush(stdout);
@@ -271,33 +271,44 @@ void fg(job_list_t * jlist, int jid) {
                     "[%i] (%i) suspended by signal %i\n",
                     jid, pid, WSTOPSIG(wstatus));
         } else {
-            fprintf(stdout, "terminated");
-            fflush(stdout);
             remove_job_jid(jlist, jid);
         }
     }
     
 }
 
-void bg(job_list_t * jlist) {
-    int jid = jobn - 1;
+void bg(job_list_t * jlist, int jid) {
+    int j;
     int pid = get_job_pid(jlist, jid);
+    int canary = 0;
+    
     if (pid == -1) {
-        fprintf(stderr, "error: jid does not exist\n");
+        fprintf(stderr, "job not found\n");
+        canary = 1;
+    } else {
+        pid_t pgid = getpgid(pid);
+        if (pgid < 0) {
+            perror("getpgid");
+            fflush(stderr);
+            canary = 1;
+        }
+        j = tcsetpgrp(0, pid);
+        if (j < 0) {
+            perror("tcsetpgrp");
+            fflush(stderr);
+            canary = 1;
+        }
+        j = kill(-pid, SIGCONT);
+        if (j < 0) {
+            perror("kill");
+            fflush(stderr);
+            canary = 1;
+        }
     }
-    pid_t pgid = getpgid(pid);
-    if (pgid < 0) {
-        perror("getpgid");
+    if (!canary) {
+        update_job_pid(jlist, pid, RUNNING);
     }
-    int j = tcsetpgrp(0, getpgrp());
-    if (j < 0) {
-        perror("tcsetpgrp");
-    }
-    j = kill(-pid, SIGCONT);
-    if (j < 0) {
-        perror("kill");
-    }
-    update_job_pid(jlist, pid, RUNNING);
+    
 }
 
 
@@ -331,6 +342,7 @@ int main() {
             ret = waitpid(pid, &status, WNOHANG | WUNTRACED | WCONTINUED);
             if (ret > 0) {
                 if (WIFEXITED(status)) {
+                    update_job_jid(jlist, jid, STOPPED);
                     printf("[%i] (%i) terminated with exit status %i\n", jid, pid,
                         WEXITSTATUS(status));
                     remove_job_jid(jlist, jid);
@@ -344,7 +356,7 @@ int main() {
                         WSTOPSIG(status));
                 } else if (WIFCONTINUED(status)) {
                     update_job_jid(jlist, jid, RUNNING);
-                    printf("[%i] (%i) resumed", jid, pid);
+                    printf("[%i] (%i) resumed\n", jid, pid);
                 }
             }
         }
@@ -419,7 +431,14 @@ int main() {
                             fg(jlist, jid);
                         }
                     } else if (strcmp(cmd, "bg") == 0) {
-                        bg(jlist);
+                        char *bg_arg = strrchr(tokens[1], '%');
+                        if (bg_arg == NULL) {
+                            fprintf(stderr, "fg: syntax error");
+                        } else {
+                            bg_arg++;
+                            int jid = atoi(bg_arg);
+                            bg(jlist, jid);
+                        }
                     } else if (strcmp(cmd, "jobs") == 0)
                     {
                         jobs(jlist);
